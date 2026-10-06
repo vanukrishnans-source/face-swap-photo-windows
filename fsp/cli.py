@@ -237,6 +237,9 @@ def _main(argv=None):
     p.add_argument("--dml-probe", metavar="MODEL"); p.add_argument("--test-dml-fallback", action="store_true")
     p.add_argument("--auto-swap", action="store_true", help="GUI: run the swap through the real window")
     p.add_argument("--auto-save", metavar="PATH", help="GUI: save the result through the real window")
+    p.add_argument("--click-save", action="store_true",
+                   help="GUI: click the SAVE button for JPEG and PNG (full-res file written; guards path=bool bug)")
+    p.add_argument("--click-save-dir", metavar="DIR", help="GUI: folder for --click-save outputs")
     p.add_argument("--shots-dir", metavar="DIR", help="GUI: grab window screenshots + layout report")
     p.add_argument("--screen-grab", metavar="PNG", help="GUI: grab the whole screen at the end")
     p.add_argument("--hold", type=float, default=0, help="GUI autorun: keep the window open N seconds at the end")

@@ -5,23 +5,28 @@ No video mode — pick a photo, pick the face(s), swap, compare, save at **full 
 
 | | |
 |---|---|
-| Package | Face Swap Photo **1.0.0** · portable zip · unsigned |
+| Package | Face Swap Photo **1.0.1** · portable zip · unsigned |
 | Acceleration | ONNX Runtime **DirectML** on the Radeon 780M · DirectML is probed in a child process first, any failure → **CPU** (the app never closes because of a GPU driver crash) |
 | Models | YOLO Face 8n · ArcFace w600k r50 · inswapper 128 fp16 · optional GPEN-BFR 512 / 256 enhancer |
 | Output | Same width × height as the original photo · **PNG** (lossless) or **JPEG** q97, 4:4:4 chroma |
 | Save folder | `%USERPROFILE%\Pictures\FaceSwapPhoto` (change in Options) |
 | Logs | `%LOCALAPPDATA%\FaceSwapPhoto\crash.log`, `faceswapphoto.log` |
 
+## Changelog
+
+* **1.0.1** — Fix SAVE crash when PNG/JPEG was selected: `QPushButton.clicked` was wiring its checked `bool` into `save(path=…)`, so `Path(False)` raised `argument should be a str or an os.PathLike object … not 'bool'`. Path is always a str/Path; format is separate. CI clicks SAVE for JPEG and PNG at full resolution.
+* **1.0.0** — Initial Ally X release.
+
 ## Install / run
 
-1. Download **`FaceSwapPhoto-1.0.0-win64.zip`** from [Releases](https://github.com/vanukrishnans-source/face-swap-photo-windows/releases) and unzip anywhere (e.g. `C:\Games\FaceSwapPhoto\`).
+1. Download **`FaceSwapPhoto-1.0.1-win64.zip`** from [Releases](https://github.com/vanukrishnans-source/face-swap-photo-windows/releases) and unzip anywhere (e.g. `C:\Games\FaceSwapPhoto\`).
 2. Run **`FaceSwapPhoto.exe`**. SmartScreen (the build is not code-signed): **More info** → **Run anyway**.
 3. Models:
    * If Face Fusion Studio is installed, its models in `%LOCALAPPDATA%\FaceFusionStudio\models` are **reused in place** (SHA-256 checked, not copied). GIF Face Swap's folder is checked too.
    * Otherwise the one-time setup screen downloads them into `%LOCALAPPDATA%\FaceSwapPhoto\models`: **~465 MB required** (YOLO Face 12.7 MB + ArcFace 174.4 MB + inswapper 277.7 MB) **+ 284 MB HQ enhancer** (GPEN 512, ticked by default) · optional Light enhancer 76 MB. Downloads resume, every file is SHA-256 verified.
    * Download sources, in order: `vanukrishnans-source/collage-video` models-v1 (ArcFace, inswapper, GPEN) and `vanukrishnans-source/face-swap-photo-windows` models-v1 (YOLO Face), then the public FaceFusion assets on GitHub / Hugging Face as fallback.
 
-Verify the zip: `Get-FileHash .\FaceSwapPhoto-1.0.0-win64.zip -Algorithm SHA256`
+Verify the zip: `Get-FileHash .\FaceSwapPhoto-1.0.1-win64.zip -Algorithm SHA256`
 
 ## Using it (one screen, no scrolling)
 

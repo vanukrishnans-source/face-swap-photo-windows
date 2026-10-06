@@ -59,6 +59,13 @@ jobs:
         shell: pwsh
         run: python scripts/fetch_test_photo.py clips/target_couple_cc0_6000x4000.jpg
 
+      - name: Unit test - SAVE path never bool (JPEG + PNG full-res write)
+        shell: pwsh
+        run: |
+          $env:QT_QPA_PLATFORM = "offscreen"
+          python -m unittest tests.test_save_path -v
+          if ($LASTEXITCODE -ne 0) { throw "unit tests failed" }
+
       - name: PyInstaller (onedir, GUI exe + console exe)
         shell: pwsh
         run: |
@@ -103,10 +110,12 @@ jobs:
         run: |
           $out = "$PWD\screens-ci"
           New-Item -ItemType Directory -Force -Path $out | Out-Null
+          New-Item -ItemType Directory -Force -Path selftest-out\click-saves | Out-Null
           $p = Start-Process -FilePath dist\FaceSwapPhoto\FaceSwapPhoto.exe -PassThru -Wait -ArgumentList @(
             "--target", "`"$PWD\clips\target_couple_cc0_6000x4000.jpg`"", "--faces", "`"$PWD\testdata\faces_mixkit48205.jpg`"",
             "--models", "`"$PWD\.models-cache`"", "--device", "cpu", "--auto-swap",
             "--auto-save", "`"$PWD\selftest-out\gui_saved.jpg`"", "--shots-dir", "`"$out`"",
+            "--click-save", "--click-save-dir", "`"$PWD\selftest-out\click-saves`"",
             "--screen-grab", "`"$out\desktop_screen.png`"")
           Write-Host "exit code $($p.ExitCode)"
           Get-Content "$out\gui_autorun_report.json"
@@ -145,6 +154,7 @@ jobs:
             selftest-out/**/*.json
             selftest-out/**/*before_after*.jpg
             selftest-out/swap/**
+            selftest-out/click-saves/**
             screens-ci/**
             dist/SHA256SUMS
 
@@ -188,7 +198,7 @@ jobs:
             "",
             "### CI (windows-latest, packaged exe)",
             "- CLI selftest, 6000x4000 CC0 photo, HQ enhancer, CPU: ok=$($r.ok) · checks $(($r.checks | ConvertTo-Json -Compress))",
-            "- Windowed exe real swap + save + no-scroll layout check: ok=$($g.ok)",
+            "- Windowed exe real swap + save + no-scroll layout check: ok=$($g.ok) · click-save JPEG/PNG=$($g.steps.click_save_ok)",
             "- DirectML smoke: $dml",
             "",
             "Details: https://github.com/${{ github.repository }}#readme"

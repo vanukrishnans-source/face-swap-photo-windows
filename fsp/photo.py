@@ -92,7 +92,16 @@ def default_pictures_dir() -> Path:
 
 
 def save_image(img, path, fmt=None, jpeg_quality=97) -> Path:
-    """Save at the image's full resolution. PNG = lossless; JPEG = quality 97, 4:4:4 chroma (no colour smear)."""
+    """Save at the image's full resolution. PNG = lossless; JPEG = quality 97, 4:4:4 chroma (no colour smear).
+
+    ``path`` must be a str or os.PathLike — never a bool (Qt clicked signal) or format flag.
+    Format is always a separate argument / taken from the path suffix.
+    """
+    if isinstance(path, bool) or not isinstance(path, (str, Path, os.PathLike)):
+        raise TypeError(
+            f"save path must be str or PathLike, not {type(path).__name__!r} "
+            f"(got {path!r}) — format belongs in the fmt argument"
+        )
     path = Path(path)
     fmt = (fmt or path.suffix.lstrip(".") or "jpg").lower()
     if fmt in ("jpeg", "jpg"):

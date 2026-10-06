@@ -586,7 +586,7 @@ class MainWindow(QMainWindow):
         bl.addWidget(pw, 1)
         self.btn_cancel = button("Cancel", "danger", 110, 56); self.btn_cancel.clicked.connect(self.cancel); bl.addWidget(self.btn_cancel)
         self.btn_swap = button("SWAP", "primary", 170, 58); self.btn_swap.clicked.connect(self.swap); bl.addWidget(self.btn_swap)
-        self.btn_save = button("SAVE", "save", 150, 58); self.btn_save.clicked.connect(self.save); bl.addWidget(self.btn_save)
+        self.btn_save = button("SAVE", "save", 150, 58); self.btn_save.clicked.connect(lambda: self.save()); bl.addWidget(self.btn_save)
         self.btn_folder = button("Open folder", None, 140, 56); self.btn_folder.clicked.connect(self.open_folder); bl.addWidget(self.btn_folder)
         outer.addWidget(bar)
         return w
@@ -845,11 +845,21 @@ class MainWindow(QMainWindow):
         self.run_worker(work, ok, None, prog, "Swapping…")
 
     def save(self, path=None):
+        """Save the swap result at full resolution.
+
+        QPushButton.clicked emits a checked bool — never treat that as a path
+        (1.0.0 bug: Path(False) → TypeError on SAVE).
+        """
         if self.result is None or self.busy(): return
+        # clicked(bool) / accidental non-path args must fall back to auto path
+        if not isinstance(path, (str, Path)):
+            path = None
         fmt = self.opt["fmt"]
         if path is None:
             stem = "".join(ch for ch in Path(self.target.path).stem if ch.isalnum() or ch in "-_ ")[:40].strip() or "photo"
             path = Path(self.opt["out_dir"]) / f"{stem}_faceswap_{time.strftime('%Y%m%d-%H%M%S')}.{fmt}"
+        else:
+            path = Path(path)
         img, q = self.result["img"], int(self.opt["jpeg_q"])
 
         def work(c, e):
@@ -1122,6 +1132,30 @@ def autorun(app, win, args):
         if win.saved_path and win.saved_path.is_file():
             chk = cv2.imdecode(np.fromfile(str(win.saved_path), np.uint8), cv2.IMREAD_COLOR)
             report["steps"]["saved_size"] = [int(chk.shape[1]), int(chk.shape[0])]
+    # Click SAVE like a user (QPushButton.clicked emits bool) for JPEG and PNG — guards the 1.0.0 path bug
+    if getattr(args, "click_save", False) and win.result is not None:
+        click_dir = Path(getattr(args, "click_save_dir", None) or (Path(args.shots_dir) / "click_saves" if out else Path(win.opt["out_dir"])))
+        click_dir.mkdir(parents=True, exist_ok=True)
+        win.set_opt("out_dir", str(click_dir))
+        tsize = list(win.target.size) if win.target is not None else None
+        click_report = {}
+        for fmt in ("jpg", "png"):
+            win.set_opt("fmt", fmt)
+            win.seg_fmt.set(fmt)
+            spin(app, 0.1)
+            # Real button click: emits checked bool into whatever was connected — must not crash
+            win.btn_save.click()
+            spin(app, until=idle, timeout=600)
+            p = win.saved_path
+            entry = dict(path=str(p) if p else None, ok=False, size=None, fmt=fmt)
+            if p is not None and p.is_file():
+                chk = cv2.imdecode(np.fromfile(str(p), np.uint8), cv2.IMREAD_COLOR)
+                if chk is not None:
+                    entry["size"] = [int(chk.shape[1]), int(chk.shape[0])]
+                    entry["ok"] = entry["size"] == tsize and p.suffix.lower() in ((".jpg", ".jpeg") if fmt == "jpg" else (".png",))
+            click_report[fmt] = entry
+        report["steps"]["click_save"] = click_report
+        report["steps"]["click_save_ok"] = all(v.get("ok") for v in click_report.values())
     if getattr(args, "screen_grab", None):
         win.resize(1280, 720); spin(app, 0.8)
         scr = QApplication.primaryScreen()
@@ -1137,7 +1171,8 @@ def autorun(app, win, args):
     sw = report["steps"].get("swap") or {}
     report["ok"] = bool(sw) and [sw.get("W"), sw.get("H")] == tsize and sw.get("faces", 0) >= 1 and \
         all(v.get("ok") for v in report.get("layout", {}).values()) and \
-        (not getattr(args, "auto_save", None) or report["steps"].get("saved_size") == tsize)
+        (not getattr(args, "auto_save", None) or report["steps"].get("saved_size") == tsize) and \
+        (not getattr(args, "click_save", False) or report["steps"].get("click_save_ok"))
     report["target_size"] = tsize
     if out:
         (out / "gui_autorun_report.json").write_text(json.dumps(report, indent=2, default=str), encoding="utf-8")
@@ -1172,7 +1207,7 @@ def run_gui(args=None) -> int:
         win.gamepad = Gamepad(win)
     except Exception:  # noqa: BLE001
         pass
-    scripted = args is not None and (getattr(args, "auto_swap", False) or getattr(args, "shots_dir", None))
+    scripted = args is not None and (getattr(args, "auto_swap", False) or getattr(args, "shots_dir", None) or getattr(args, "click_save", False))
     win.resize(1280, 720)
     scr = QApplication.primaryScreen()
     if not scripted and scr is not None and scr.availableGeometry().width() <= 1400:
