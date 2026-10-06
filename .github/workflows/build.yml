@@ -1,0 +1,203 @@
+# Build Face Swap Photo (Windows x64 portable zip), test the PACKAGED exe end-to-end on windows-latest, publish a Release.
+name: build
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: "Create / update the GitHub Release with the zip"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+env:
+  PYTHON_VERSION: "3.13"
+  PYTHONUTF8: "1"
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: requirements-win.txt
+
+      - name: Runner info
+        shell: pwsh
+        run: |
+          Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores | Format-List
+          Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion | Format-List
+          [System.Environment]::OSVersion.VersionString
+
+      - name: Install Python deps
+        shell: pwsh
+        run: |
+          python -m pip install -U pip wheel
+          pip install -r requirements-win.txt
+          python -c "import onnxruntime, cv2, PySide6, numpy; print(onnxruntime.__version__, onnxruntime.get_available_providers(), cv2.__version__, PySide6.__version__)"
+
+      - name: Cache AI models
+        uses: actions/cache@v4
+        with:
+          path: .models-cache
+          key: models-fsp-v1-${{ hashFiles('fsp/models.py') }}
+
+      - name: Prefetch models (vanukrishnans-source releases first, SHA-256 checked)
+        shell: pwsh
+        run: python scripts/prefetch_models.py .models-cache light hq
+
+      - name: Fetch 6000x4000 CC0 test photo (SHA-checked)
+        shell: pwsh
+        run: python scripts/fetch_test_photo.py clips/target_couple_cc0_6000x4000.jpg
+
+      - name: PyInstaller (onedir, GUI exe + console exe)
+        shell: pwsh
+        run: |
+          pyinstaller FaceSwapPhoto.spec --noconfirm
+          "{0:N1} MB" -f ((Get-ChildItem dist/FaceSwapPhoto -Recurse | Measure-Object Length -Sum).Sum / 1MB)
+
+      - name: Selftest - packaged FaceSwapPhoto_cli.exe, full-res 24 MP swap (CPU, HQ enhancer, DirectML smoke)
+        shell: pwsh
+        run: |
+          $out = "$PWD\selftest-out\cli"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          & dist\FaceSwapPhoto\FaceSwapPhoto_cli.exe --selftest `
+            --target clips\target_couple_cc0_6000x4000.jpg --faces testdata\faces_mixkit48205.jpg `
+            --models "$PWD\.models-cache" --device cpu --enhance gpen512 --out $out --dml-smoke
+          $code = $LASTEXITCODE
+          Get-Content "$out\selftest_report.json"
+          if ($code -ne 0) { throw "selftest failed: $code" }
+
+      - name: Headless swap - packaged exe, auto device (DirectML if the runner allows, else CPU)
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path selftest-out\swap | Out-Null
+          & dist\FaceSwapPhoto\FaceSwapPhoto_cli.exe --swap testdata\target_couple_e5.jpg --faces testdata\faces_mixkit48205.jpg `
+            --out selftest-out\swap\swap_auto.png --before-after selftest-out\swap\before_after.jpg `
+            --models "$PWD\.models-cache" --device auto --enhance gpen256
+          if ($LASTEXITCODE -ne 0) { throw "swap failed: $LASTEXITCODE" }
+
+      - name: DirectML failure -> CPU fallback (process must stay alive)
+        shell: pwsh
+        run: |
+          $out = "$PWD\selftest-out\dml-fallback"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $env:FSP_FORCE_DML_FAIL = "1"
+          & dist\FaceSwapPhoto\FaceSwapPhoto_cli.exe --test-dml-fallback --models "$PWD\.models-cache" --out $out
+          $code = $LASTEXITCODE
+          Remove-Item Env:FSP_FORCE_DML_FAIL -ErrorAction SilentlyContinue
+          Get-Content "$out\dml_fallback_report.json"
+          if ($code -ne 0) { throw "dml fallback test failed: $code" }
+
+      - name: GUI - packaged windowed FaceSwapPhoto.exe, real window, real swap + save, no-scroll layout check
+        shell: pwsh
+        run: |
+          $out = "$PWD\screens-ci"
+          New-Item -ItemType Directory -Force -Path $out | Out-Null
+          $p = Start-Process -FilePath dist\FaceSwapPhoto\FaceSwapPhoto.exe -PassThru -Wait -ArgumentList @(
+            "--target", "`"$PWD\clips\target_couple_cc0_6000x4000.jpg`"", "--faces", "`"$PWD\testdata\faces_mixkit48205.jpg`"",
+            "--models", "`"$PWD\.models-cache`"", "--device", "cpu", "--auto-swap",
+            "--auto-save", "`"$PWD\selftest-out\gui_saved.jpg`"", "--shots-dir", "`"$out`"",
+            "--screen-grab", "`"$out\desktop_screen.png`"")
+          Write-Host "exit code $($p.ExitCode)"
+          Get-Content "$out\gui_autorun_report.json"
+          Get-ChildItem $out | Format-Table Name, Length
+          if ($p.ExitCode -ne 0) { throw "GUI autorun failed" }
+
+      - name: Make portable zip
+        shell: pwsh
+        run: |
+          powershell -ExecutionPolicy Bypass -File packaging/make_zip.ps1
+          Get-ChildItem dist\*.zip | Format-Table Name, Length
+          Get-Content dist\SHA256SUMS
+
+      - name: Anonymous zip verify (extract + run --version)
+        shell: pwsh
+        run: |
+          $zip = Get-ChildItem dist\FaceSwapPhoto-*-win64.zip | Select-Object -First 1
+          $tmp = Join-Path $env:TEMP "fsp-anon-verify"
+          if (Test-Path $tmp) { Remove-Item -Recurse -Force $tmp }
+          Expand-Archive $zip.FullName -DestinationPath $tmp
+          $exe = Get-ChildItem $tmp -Recurse -Filter FaceSwapPhoto_cli.exe | Select-Object -First 1
+          if (-not $exe) { throw "cli exe missing from zip" }
+          & $exe.FullName --version
+          if ($LASTEXITCODE -ne 0) { throw "extracted exe failed" }
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          $expected = (Get-Content dist\SHA256SUMS | Select-Object -First 1).Split()[0].ToLower()
+          if ($sha -ne $expected) { throw "SHA mismatch $sha vs $expected" }
+          Write-Host "anonymous zip OK: $($zip.Name) sha=$sha"
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceSwapPhoto-win64-tests
+          path: |
+            selftest-out/**/*.json
+            selftest-out/**/*before_after*.jpg
+            selftest-out/swap/**
+            screens-ci/**
+            dist/SHA256SUMS
+
+      - name: Upload zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: FaceSwapPhoto-win64-zip
+          path: dist/FaceSwapPhoto-*-win64.zip
+          compression-level: 0
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/v') || inputs.publish
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $zip = Get-ChildItem dist\FaceSwapPhoto-*-win64.zip | Select-Object -First 1
+          $ver = $zip.Name -replace '^FaceSwapPhoto-(.+)-win64\.zip$', '$1'
+          $tag = if ("${{ github.ref }}".StartsWith("refs/tags/")) { "${{ github.ref_name }}" } else { "v$ver" }
+          $sha = (Get-FileHash $zip.FullName -Algorithm SHA256).Hash.ToLower()
+          $r = Get-Content selftest-out\cli\selftest_report.json -Raw | ConvertFrom-Json
+          $g = Get-Content screens-ci\gui_autorun_report.json -Raw | ConvertFrom-Json
+          $dml = if ($r.directml) { ($r.directml | ConvertTo-Json -Compress -Depth 6) } else { "n/a" }
+          $lines = @(
+            "Face Swap Photo **$ver** — portable Windows 10/11 x64, photo-only face swap for the ASUS ROG Ally X (Radeon 780M, DirectML with automatic CPU fallback).",
+            "",
+            "| Asset | Size | SHA-256 |",
+            "|---|---|---|",
+            "| $($zip.Name) | $($zip.Length) bytes | ``$sha`` |",
+            "",
+            "### Run",
+            "1. Unzip, open the **FaceSwapPhoto** folder, run **FaceSwapPhoto.exe**.",
+            "2. SmartScreen (unsigned build): **More info** -> **Run anyway**.",
+            "3. Models: reused from Face Fusion Studio (`%LOCALAPPDATA%\\FaceFusionStudio\\models`) if present, otherwise one-time download (~465 MB required + 284 MB HQ enhancer, optional).",
+            "",
+            "### What it does",
+            "- Pick the photo to change (one or many people) and the face photo(s); couples map left -> right, **Flip** or tap a person to choose who becomes who.",
+            "- Before / After / Side by side / Face zoom preview, then **SAVE** at the **full original resolution** (PNG lossless or JPEG q97 4:4:4).",
+            "- Optional GPEN face enhancer (HQ 512 / Light 256). Face-only colour blend: body, skin outside the face, hair and background are untouched.",
+            "- One fixed screen, no scrolling (fits 1280x720 @150 %, 1280x800 and a maximised window above the taskbar).",
+            "",
+            "### CI (windows-latest, packaged exe)",
+            "- CLI selftest, 6000x4000 CC0 photo, HQ enhancer, CPU: ok=$($r.ok) · checks $(($r.checks | ConvertTo-Json -Compress))",
+            "- Windowed exe real swap + save + no-scroll layout check: ok=$($g.ok)",
+            "- DirectML smoke: $dml",
+            "",
+            "Details: https://github.com/${{ github.repository }}#readme"
+          )
+          $lines -join "`n" | Out-File -Encoding utf8 notes.md
+          gh release view $tag *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag $zip.FullName dist\SHA256SUMS --title "Face Swap Photo for Windows $tag" --notes-file notes.md
+          } else {
+            gh release upload $tag $zip.FullName dist\SHA256SUMS --clobber
+            gh release edit $tag --notes-file notes.md
+          }
